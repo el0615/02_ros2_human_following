@@ -1,0 +1,41 @@
+# =========================
+# ROS2 Build Artifacts
+# =========================
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# =========================
+# Accidental colcon build inside src
+# =========================
+ros2_ws/src/build/
+ros2_ws/src/install/
+ros2_ws/src/log/
+
+# Colcon
+**/COLCON_IGNORE
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+
+# =========================
+# VS Code
+# =========================
+.vscode/
+
+# =========================
+# OS
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# Temporary files
+# =========================
+*.swp
+*.swo
+*~

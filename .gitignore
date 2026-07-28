@@ -39,3 +39,30 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+
+# ROS2 build artifacts
+build/
+install/
+log/
+
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Model and large generated files
+*.pt

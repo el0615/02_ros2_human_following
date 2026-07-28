@@ -4,6 +4,7 @@ import rclpy
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import Image
+from ultralytics import YOLO
 
 
 class ImageSubscriber(Node):
@@ -13,6 +14,10 @@ class ImageSubscriber(Node):
 
         self.bridge = CvBridge()
 
+        self.model = YOLO(
+            '/home/el0615/Projects/02_ros2_human_following/ros2_ws/yolov8n.pt'
+        )
+
         self.subscription = self.create_subscription(
             Image,
             '/rgb',
@@ -20,7 +25,9 @@ class ImageSubscriber(Node):
             10
         )
 
-        self.get_logger().info('Image subscriber node started')
+        self.get_logger().info(
+            'Image subscriber and YOLO model started'
+        )
 
     def image_callback(self, msg):
         try:
@@ -29,12 +36,23 @@ class ImageSubscriber(Node):
                 desired_encoding='bgr8'
             )
 
-            cv2.imshow('Isaac Sim Camera', cv_image)
+            results = self.model(
+                cv_image,
+                classes=[0],
+                verbose=False
+            )
+
+            annotated_image = results[0].plot()
+
+            cv2.imshow(
+                'YOLO Person Detection',
+                annotated_image
+            )
             cv2.waitKey(1)
 
         except Exception as error:
             self.get_logger().error(
-                f'Image conversion failed: {error}'
+                f'Image processing failed: {error}'
             )
 
 

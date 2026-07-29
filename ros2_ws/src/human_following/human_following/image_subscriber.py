@@ -1,5 +1,4 @@
 import cv2
-from matplotlib.pyplot import box
 import rclpy
 
 from cv_bridge import CvBridge
@@ -43,37 +42,56 @@ class ImageSubscriber(Node):
                 verbose=False
             )
 
+            annotated_image = results[0].plot()
+
             boxes = results[0].boxes
 
             if len(boxes) > 0:
 
                 box = boxes[0]
 
-                x1, y1, x2, y2 = box.xyxy[0]
+                x1, y1, x2, y2 = map(
+                    float,
+                    box.xyxy[0].tolist()
+                )
 
                 confidence = float(box.conf[0])
 
                 class_id = int(box.cls[0])
 
-                self.get_logger().info(
-                    f"x1={x1:.1f}, y1={y1:.1f}, "
-                    f"x2={x2:.1f}, y2={y2:.1f}"
+                center_x = (x1 + x2) / 2
+                center_y = (y1 + y2) / 2
+
+                cv2.circle(
+                    annotated_image,
+                    (int(center_x), int(center_y)),
+                    7,
+                    (0, 0, 255),
+                    -1
                 )
 
                 self.get_logger().info(
-                    f"Confidence={confidence:.2f}"
+                    f'Bounding Box: '
+                    f'x1={x1:.1f}, y1={y1:.1f}, '
+                    f'x2={x2:.1f}, y2={y2:.1f}'
                 )
 
                 self.get_logger().info(
-                    f"Class={class_id}"
+                    f'Center: '
+                    f'x={center_x:.1f}, '
+                    f'y={center_y:.1f}'
                 )
 
-            annotated_image = results[0].plot()
+                self.get_logger().info(
+                    f'Confidence={confidence:.2f}, '
+                    f'Class={class_id}'
+                )
 
             cv2.imshow(
                 'YOLO Person Detection',
                 annotated_image
             )
+
             cv2.waitKey(1)
 
         except Exception as error:

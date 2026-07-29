@@ -47,7 +47,6 @@ class ImageSubscriber(Node):
             boxes = results[0].boxes
 
             if len(boxes) > 0:
-
                 box = boxes[0]
 
                 x1, y1, x2, y2 = map(
@@ -56,11 +55,24 @@ class ImageSubscriber(Node):
                 )
 
                 confidence = float(box.conf[0])
-
                 class_id = int(box.cls[0])
 
                 center_x = (x1 + x2) / 2
                 center_y = (y1 + y2) / 2
+
+                image_height, image_width = cv_image.shape[:2]
+                image_center_x = image_width / 2
+
+                error_x = center_x - image_center_x
+
+                dead_zone = 80
+
+                if error_x < -dead_zone:
+                    direction = 'LEFT'
+                elif error_x > dead_zone:
+                    direction = 'RIGHT'
+                else:
+                    direction = 'CENTER'
 
                 cv2.circle(
                     annotated_image,
@@ -68,6 +80,54 @@ class ImageSubscriber(Node):
                     7,
                     (0, 0, 255),
                     -1
+                )
+
+                cv2.line(
+                    annotated_image,
+                    (int(image_center_x), 0),
+                    (int(image_center_x), image_height),
+                    (255, 0, 0),
+                    2
+                )
+
+                text = f'Direction: {direction}'
+
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 1.3
+                thickness = 3
+
+                (text_width, text_height), baseline = cv2.getTextSize(
+                    text,
+                    font,
+                    font_scale,
+                    thickness
+                )
+
+                text_x = int((image_width - text_width) / 2)
+                text_y = 60
+
+                cv2.rectangle(
+                    annotated_image,
+                    (
+                        text_x - 15,
+                        text_y - text_height - 15
+                    ),
+                    (
+                        text_x + text_width + 15,
+                        text_y + baseline + 10
+                    ),
+                    (0, 0, 0),
+                    -1
+                )
+
+                cv2.putText(
+                    annotated_image,
+                    text,
+                    (text_x, text_y),
+                    font,
+                    font_scale,
+                    (0, 255, 255),
+                    thickness
                 )
 
                 self.get_logger().info(
@@ -80,6 +140,12 @@ class ImageSubscriber(Node):
                     f'Center: '
                     f'x={center_x:.1f}, '
                     f'y={center_y:.1f}'
+                )
+
+                self.get_logger().info(
+                    f'Image Center X={image_center_x:.1f}, '
+                    f'Error X={error_x:.1f}, '
+                    f'Direction={direction}'
                 )
 
                 self.get_logger().info(

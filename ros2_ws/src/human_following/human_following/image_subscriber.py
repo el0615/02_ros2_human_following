@@ -15,7 +15,8 @@ class ImageSubscriber(Node):
         self.bridge = CvBridge()
 
         self.model = YOLO(
-            '/home/el0615/Projects/02_ros2_human_following/ros2_ws/yolov8n.pt'
+            '/home/el0615/Projects/02_ros2_human_following/'
+            'ros2_ws/yolov8n.pt'
         )
 
         self.subscription = self.create_subscription(
@@ -74,6 +75,35 @@ class ImageSubscriber(Node):
                 else:
                     direction = 'CENTER'
 
+                normalized_error_x = (
+                    error_x / image_center_x
+                )
+
+                normalized_error_x = max(
+                    -1.0,
+                    min(1.0, normalized_error_x)
+                )
+
+                max_angular_speed = 0.8
+                base_linear_speed = 0.3
+
+                if abs(error_x) <= dead_zone:
+                    target_angular_z = 0.0
+                    target_linear_x = base_linear_speed
+                else:
+                    target_angular_z = (
+                        -max_angular_speed
+                        * normalized_error_x
+                    )
+
+                    target_linear_x = (
+                        base_linear_speed
+                        * (
+                            1.0
+                            - abs(normalized_error_x)
+                        )
+                    )
+
                 cv2.circle(
                     annotated_image,
                     (int(center_x), int(center_y)),
@@ -96,14 +126,19 @@ class ImageSubscriber(Node):
                 font_scale = 1.3
                 thickness = 3
 
-                (text_width, text_height), baseline = cv2.getTextSize(
+                (
+                    text_width,
+                    text_height
+                ), baseline = cv2.getTextSize(
                     text,
                     font,
                     font_scale,
                     thickness
                 )
 
-                text_x = int((image_width - text_width) / 2)
+                text_x = int(
+                    (image_width - text_width) / 2
+                )
                 text_y = 60
 
                 cv2.rectangle(
@@ -149,12 +184,21 @@ class ImageSubscriber(Node):
                 )
 
                 self.get_logger().info(
+                    f'Normalized Error X='
+                    f'{normalized_error_x:.3f}, '
+                    f'Target Linear X='
+                    f'{target_linear_x:.3f}, '
+                    f'Target Angular Z='
+                    f'{target_angular_z:.3f}'
+                )
+
+                self.get_logger().info(
                     f'Confidence={confidence:.2f}, '
                     f'Class={class_id}'
                 )
 
             cv2.imshow(
-                'YOLO Person Detection',
+                'YOLO Person Tracking',
                 annotated_image
             )
 

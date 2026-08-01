@@ -2,6 +2,7 @@ import cv2
 import rclpy
 
 from cv_bridge import CvBridge
+from geometry_msgs.msg import Twist
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from ultralytics import YOLO
@@ -26,8 +27,15 @@ class ImageSubscriber(Node):
             10
         )
 
+        self.cmd_vel_publisher = self.create_publisher(
+            Twist,
+            '/cmd_vel',
+            10
+        )
+
         self.get_logger().info(
-            'Image subscriber and YOLO model started'
+            'Image subscriber, YOLO model, '
+            'and cmd_vel publisher started'
         )
 
     def image_callback(self, msg):
@@ -44,7 +52,6 @@ class ImageSubscriber(Node):
             )
 
             annotated_image = results[0].plot()
-
             boxes = results[0].boxes
 
             if len(boxes) > 0:
@@ -65,7 +72,6 @@ class ImageSubscriber(Node):
                 image_center_x = image_width / 2
 
                 error_x = center_x - image_center_x
-
                 dead_zone = 80
 
                 if error_x < -dead_zone:
@@ -103,6 +109,18 @@ class ImageSubscriber(Node):
                             - abs(normalized_error_x)
                         )
                     )
+
+                twist = Twist()
+
+                twist.linear.x = target_linear_x
+                twist.linear.y = 0.0
+                twist.linear.z = 0.0
+
+                twist.angular.x = 0.0
+                twist.angular.y = 0.0
+                twist.angular.z = target_angular_z
+
+                self.cmd_vel_publisher.publish(twist)
 
                 cv2.circle(
                     annotated_image,
@@ -190,6 +208,12 @@ class ImageSubscriber(Node):
                     f'{target_linear_x:.3f}, '
                     f'Target Angular Z='
                     f'{target_angular_z:.3f}'
+                )
+
+                self.get_logger().info(
+                    f'Published cmd_vel: '
+                    f'linear.x={twist.linear.x:.3f}, '
+                    f'angular.z={twist.angular.z:.3f}'
                 )
 
                 self.get_logger().info(

@@ -98,7 +98,7 @@ class ImageSubscriber(Node):
                     target_linear_x = base_linear_speed
                 else:
                     target_angular_z = (
-                        -max_angular_speed
+                        max_angular_speed
                         * normalized_error_x
                     )
 

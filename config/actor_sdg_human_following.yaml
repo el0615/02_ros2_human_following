@@ -1,0 +1,11 @@
+isaacsim.replicator.agent:
+  version: 1.2.0
+  seed: 2444059196
+  environment:
+    base_stage_asset_path: /home/el0615/Projects/02_ros2_human_following/isaac_sim/human_following_dynamic_actor.usd
+  character:
+    groups:
+      human_follow_target:
+        num: 1
+        asset_path: https://omniverse-content-staging.s3-us-west-2.amazonaws.com/Assets/Isaac/6.0/Isaac/People/Characters/
+        motion_library_path: https://omniverse-content-staging.s3.us-west-2.amazonaws.com/Assets/Behavior/110.0/Samples/Assets/MotionLibrary/Human/HumanMotionLibrary.usd

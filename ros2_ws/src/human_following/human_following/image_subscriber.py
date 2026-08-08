@@ -33,6 +33,8 @@ class ImageSubscriber(Node):
             10
         )
 
+        self.last_log_time = self.get_clock().now()
+
         self.get_logger().info(
             'Image subscriber, YOLO model, '
             'and cmd_vel publisher started'
@@ -69,6 +71,12 @@ class ImageSubscriber(Node):
                 center_y = (y1 + y2) / 2
 
                 image_height, image_width = cv_image.shape[:2]
+
+                box_height = y2 - y1
+                box_height_ratio = (
+                    box_height / image_height
+                )
+
                 image_center_x = image_width / 2
 
                 error_x = center_x - image_center_x
@@ -76,8 +84,10 @@ class ImageSubscriber(Node):
 
                 if error_x < -dead_zone:
                     direction = 'LEFT'
+
                 elif error_x > dead_zone:
                     direction = 'RIGHT'
+
                 else:
                     direction = 'CENTER'
 
@@ -96,6 +106,7 @@ class ImageSubscriber(Node):
                 if abs(error_x) <= dead_zone:
                     target_angular_z = 0.0
                     target_linear_x = base_linear_speed
+
                 else:
                     target_angular_z = (
                         max_angular_speed
@@ -157,6 +168,7 @@ class ImageSubscriber(Node):
                 text_x = int(
                     (image_width - text_width) / 2
                 )
+
                 text_y = 60
 
                 cv2.rectangle(
@@ -183,43 +195,23 @@ class ImageSubscriber(Node):
                     thickness
                 )
 
-                self.get_logger().info(
-                    f'Bounding Box: '
-                    f'x1={x1:.1f}, y1={y1:.1f}, '
-                    f'x2={x2:.1f}, y2={y2:.1f}'
-                )
+                current_time = self.get_clock().now()
 
-                self.get_logger().info(
-                    f'Center: '
-                    f'x={center_x:.1f}, '
-                    f'y={center_y:.1f}'
-                )
+                if (
+                    current_time - self.last_log_time
+                ).nanoseconds >= 1_000_000_000:
 
-                self.get_logger().info(
-                    f'Image Center X={image_center_x:.1f}, '
-                    f'Error X={error_x:.1f}, '
-                    f'Direction={direction}'
-                )
+                    self.get_logger().info(
+                        f'Box Height={box_height:.1f}, '
+                        f'Box Height Ratio={box_height_ratio:.3f}, '
+                        f'Direction={direction}, '
+                        f'Linear X={twist.linear.x:.3f}, '
+                        f'Angular Z={twist.angular.z:.3f}, '
+                        f'Confidence={confidence:.2f}, '
+                        f'Class={class_id}'
+                    )
 
-                self.get_logger().info(
-                    f'Normalized Error X='
-                    f'{normalized_error_x:.3f}, '
-                    f'Target Linear X='
-                    f'{target_linear_x:.3f}, '
-                    f'Target Angular Z='
-                    f'{target_angular_z:.3f}'
-                )
-
-                self.get_logger().info(
-                    f'Published cmd_vel: '
-                    f'linear.x={twist.linear.x:.3f}, '
-                    f'angular.z={twist.angular.z:.3f}'
-                )
-
-                self.get_logger().info(
-                    f'Confidence={confidence:.2f}, '
-                    f'Class={class_id}'
-                )
+                    self.last_log_time = current_time
 
             cv2.imshow(
                 'YOLO Person Tracking',

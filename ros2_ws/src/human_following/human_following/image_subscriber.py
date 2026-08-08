@@ -35,6 +35,8 @@ class ImageSubscriber(Node):
 
         self.last_log_time = self.get_clock().now()
 
+        self.stop_state = False
+
         self.get_logger().info(
             'Image subscriber, YOLO model, '
             'and cmd_vel publisher started'
@@ -73,6 +75,7 @@ class ImageSubscriber(Node):
                 image_height, image_width = cv_image.shape[:2]
 
                 box_height = y2 - y1
+
                 box_height_ratio = (
                     box_height / image_height
                 )
@@ -102,7 +105,9 @@ class ImageSubscriber(Node):
 
                 max_angular_speed = 0.8
                 base_linear_speed = 0.3
+
                 stop_ratio = 0.70
+                resume_ratio = 0.65
 
                 if abs(error_x) <= dead_zone:
                     target_angular_z = 0.0
@@ -122,11 +127,20 @@ class ImageSubscriber(Node):
                         )
                     )
 
-                if box_height_ratio >= stop_ratio:
-                    target_linear_x = 0.0
-                    stop_state = 'STOP'
+                if self.stop_state:
+                    if box_height_ratio <= resume_ratio:
+                        self.stop_state = False
+
                 else:
-                    stop_state = 'FOLLOW'
+                    if box_height_ratio >= stop_ratio:
+                        self.stop_state = True
+
+                if self.stop_state:
+                    target_linear_x = 0.0
+                    state_text = 'STOP'
+
+                else:
+                    state_text = 'FOLLOW'
 
                 twist = Twist()
 
@@ -158,7 +172,7 @@ class ImageSubscriber(Node):
 
                 text = (
                     f'Direction: {direction} | '
-                    f'{stop_state}'
+                    f'{state_text}'
                 )
 
                 font = cv2.FONT_HERSHEY_SIMPLEX
@@ -214,7 +228,7 @@ class ImageSubscriber(Node):
                     self.get_logger().info(
                         f'Box Height={box_height:.1f}, '
                         f'Box Height Ratio={box_height_ratio:.3f}, '
-                        f'State={stop_state}, '
+                        f'State={state_text}, '
                         f'Direction={direction}, '
                         f'Linear X={twist.linear.x:.3f}, '
                         f'Angular Z={twist.angular.z:.3f}, '

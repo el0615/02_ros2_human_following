@@ -102,6 +102,7 @@ class ImageSubscriber(Node):
 
                 max_angular_speed = 0.8
                 base_linear_speed = 0.3
+                stop_ratio = 0.70
 
                 if abs(error_x) <= dead_zone:
                     target_angular_z = 0.0
@@ -120,6 +121,12 @@ class ImageSubscriber(Node):
                             - abs(normalized_error_x)
                         )
                     )
+
+                if box_height_ratio >= stop_ratio:
+                    target_linear_x = 0.0
+                    stop_state = 'STOP'
+                else:
+                    stop_state = 'FOLLOW'
 
                 twist = Twist()
 
@@ -149,7 +156,10 @@ class ImageSubscriber(Node):
                     2
                 )
 
-                text = f'Direction: {direction}'
+                text = (
+                    f'Direction: {direction} | '
+                    f'{stop_state}'
+                )
 
                 font = cv2.FONT_HERSHEY_SIMPLEX
                 font_scale = 1.3
@@ -204,6 +214,7 @@ class ImageSubscriber(Node):
                     self.get_logger().info(
                         f'Box Height={box_height:.1f}, '
                         f'Box Height Ratio={box_height_ratio:.3f}, '
+                        f'State={stop_state}, '
                         f'Direction={direction}, '
                         f'Linear X={twist.linear.x:.3f}, '
                         f'Angular Z={twist.angular.z:.3f}, '

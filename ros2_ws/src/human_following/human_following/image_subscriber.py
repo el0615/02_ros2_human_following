@@ -37,6 +37,12 @@ class ImageSubscriber(Node):
 
         self.stop_state = False
 
+        self.filtered_ratio = None
+        self.previous_filtered_ratio = None
+        self.previous_ratio_time = None
+
+        self.forward_speed = 0.0
+
         self.get_logger().info(
             'Image subscriber, YOLO model, '
             'and cmd_vel publisher started'
@@ -80,6 +86,51 @@ class ImageSubscriber(Node):
                     box_height / image_height
                 )
 
+                current_time = self.get_clock().now()
+
+                filter_alpha = 0.25
+
+                if self.filtered_ratio is None:
+                    self.filtered_ratio = box_height_ratio
+
+                else:
+                    self.filtered_ratio = (
+                        filter_alpha
+                        * box_height_ratio
+                        + (
+                            1.0 - filter_alpha
+                        )
+                        * self.filtered_ratio
+                    )
+
+                if (
+                    self.previous_filtered_ratio is None
+                    or self.previous_ratio_time is None
+                ):
+                    dt = 0.0
+                    ratio_rate = 0.0
+
+                else:
+                    dt = (
+                        current_time
+                        - self.previous_ratio_time
+                    ).nanoseconds / 1_000_000_000.0
+
+                    if dt > 0.001:
+                        ratio_rate = (
+                            self.filtered_ratio
+                            - self.previous_filtered_ratio
+                        ) / dt
+
+                    else:
+                        ratio_rate = 0.0
+
+                self.previous_filtered_ratio = (
+                    self.filtered_ratio
+                )
+
+                self.previous_ratio_time = current_time
+
                 image_center_x = image_width / 2
 
                 error_x = center_x - image_center_x
@@ -104,14 +155,22 @@ class ImageSubscriber(Node):
                 )
 
                 max_angular_speed = 0.8
-                base_linear_speed = 0.3
+                max_linear_speed = 0.3
+
+                target_ratio = 0.315
+
+                target_ratio_low = 0.300
+                target_ratio_high = 0.330
 
                 stop_ratio = 0.70
                 resume_ratio = 0.65
 
+                kp = 2.0
+                kd = 0.6
+
                 if abs(error_x) <= dead_zone:
                     target_angular_z = 0.0
-                    target_linear_x = base_linear_speed
+                    turn_factor = 1.0
 
                 else:
                     target_angular_z = (
@@ -119,23 +178,90 @@ class ImageSubscriber(Node):
                         * normalized_error_x
                     )
 
-                    target_linear_x = (
-                        base_linear_speed
+                    turn_factor = (
+                        1.0
+                        - abs(normalized_error_x)
+                    )
+
+                if self.filtered_ratio < target_ratio_low:
+                    ratio_error = (
+                        target_ratio
+                        - self.filtered_ratio
+                    )
+
+                elif self.filtered_ratio > target_ratio_high:
+                    ratio_error = (
+                        target_ratio
+                        - self.filtered_ratio
+                    )
+
+                else:
+                    ratio_error = 0.0
+
+                if dt > 0.0:
+                    speed_adjustment = (
+                        kp * ratio_error
+                        - kd * ratio_rate
+                    )
+
+                    self.forward_speed += (
+                        speed_adjustment * dt
+                    )
+
+                self.forward_speed = max(
+                    0.0,
+                    min(
+                        max_linear_speed,
+                        self.forward_speed
+                    )
+                )
+
+                if self.filtered_ratio <= target_ratio:
+                    distance_speed_limit = (
+                        max_linear_speed
+                    )
+
+                else:
+                    distance_speed_limit = (
+                        max_linear_speed
                         * (
-                            1.0
-                            - abs(normalized_error_x)
+                            stop_ratio
+                            - self.filtered_ratio
+                        )
+                        / (
+                            stop_ratio
+                            - target_ratio
                         )
                     )
 
+                    distance_speed_limit = max(
+                        0.0,
+                        min(
+                            max_linear_speed,
+                            distance_speed_limit
+                        )
+                    )
+
+                self.forward_speed = min(
+                    self.forward_speed,
+                    distance_speed_limit
+                )
+
+                target_linear_x = (
+                    self.forward_speed
+                    * turn_factor
+                )
+
                 if self.stop_state:
-                    if box_height_ratio <= resume_ratio:
+                    if self.filtered_ratio <= resume_ratio:
                         self.stop_state = False
 
                 else:
-                    if box_height_ratio >= stop_ratio:
+                    if self.filtered_ratio >= stop_ratio:
                         self.stop_state = True
 
                 if self.stop_state:
+                    self.forward_speed = 0.0
                     target_linear_x = 0.0
                     state_text = 'STOP'
 
@@ -219,15 +345,18 @@ class ImageSubscriber(Node):
                     thickness
                 )
 
-                current_time = self.get_clock().now()
-
                 if (
-                    current_time - self.last_log_time
+                    current_time
+                    - self.last_log_time
                 ).nanoseconds >= 1_000_000_000:
 
                     self.get_logger().info(
-                        f'Box Height={box_height:.1f}, '
-                        f'Box Height Ratio={box_height_ratio:.3f}, '
+                        f'Raw Ratio={box_height_ratio:.3f}, '
+                        f'Filtered Ratio={self.filtered_ratio:.3f}, '
+                        f'Target Ratio={target_ratio:.3f}, '
+                        f'Ratio Error={ratio_error:.3f}, '
+                        f'Ratio Rate={ratio_rate:.3f}, '
+                        f'Speed Limit={distance_speed_limit:.3f}, '
                         f'State={state_text}, '
                         f'Direction={direction}, '
                         f'Linear X={twist.linear.x:.3f}, '

@@ -1,6 +1,7 @@
 # =========================
 # ROS2 Build Artifacts
 # =========================
+
 ros2_ws/build/
 ros2_ws/install/
 ros2_ws/log/
@@ -8,16 +9,19 @@ ros2_ws/log/
 # =========================
 # Accidental colcon build inside src
 # =========================
+
 ros2_ws/src/build/
 ros2_ws/src/install/
 ros2_ws/src/log/
 
 # Colcon
+
 **/COLCON_IGNORE
 
 # =========================
 # Python
 # =========================
+
 __pycache__/
 *.py[cod]
 *$py.class
@@ -25,44 +29,58 @@ __pycache__/
 # =========================
 # VS Code
 # =========================
+
 .vscode/
 
 # =========================
 # OS
 # =========================
+
 .DS_Store
 Thumbs.db
 
 # =========================
 # Temporary files
 # =========================
+
 *.swp
 *.swo
 *~
 
-
 # ROS2 build artifacts
+
 build/
 install/
 log/
 
 # Python virtual environment
+
 .venv/
 venv/
 env/
 
 # Python cache
+
 __pycache__/
 *.py[cod]
 *$py.class
 
 # IDE
+
 .vscode/
 .idea/
 
 # OS files
+
 .DS_Store
 Thumbs.db
 
 # Model and large generated files
+
 *.pt
+
+# =========================
+# Generated experiment results
+# =========================
+
+results/

@@ -1,8 +1,13 @@
+import csv
+import os
+from datetime import datetime
+
 import cv2
 import rclpy
 
 from cv_bridge import CvBridge
 from geometry_msgs.msg import Twist
+from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from ultralytics import YOLO
@@ -36,6 +41,7 @@ class ImageSubscriber(Node):
         self.last_log_time = self.get_clock().now()
 
         self.stop_state = False
+        self.stop_count = 0
 
         self.filtered_ratio = None
         self.previous_filtered_ratio = None
@@ -43,9 +49,53 @@ class ImageSubscriber(Node):
 
         self.forward_speed = 0.0
 
+        self.filter_alpha = 0.25
+
+        self.max_angular_speed = 0.8
+        self.max_linear_speed = 0.3
+
+        self.target_ratio = 0.315
+        self.target_ratio_low = 0.300
+        self.target_ratio_high = 0.330
+
+        self.stop_ratio = 0.70
+        self.resume_ratio = 0.65
+
+        self.kp = 2.0
+        self.kd = 0.6
+
+        self.test_records = []
+        self.first_record_time = None
+        self.evaluation_saved = False
+
+        self.run_timestamp = datetime.now().strftime(
+            '%Y%m%d_%H%M%S'
+        )
+
+        speed_tag = (
+            f'{self.max_linear_speed:.2f}'
+            .replace('.', 'p')
+        )
+
+        self.result_directory = os.path.expanduser(
+            '~/Projects/02_ros2_human_following/'
+            f'results/dn013/max_{speed_tag}/'
+            f'run_{self.run_timestamp}'
+        )
+
+        os.makedirs(
+            self.result_directory,
+            exist_ok=True
+        )
+
         self.get_logger().info(
             'Image subscriber, YOLO model, '
-            'and cmd_vel publisher started'
+            'cmd_vel publisher, and DN-013 evaluator started'
+        )
+
+        self.get_logger().info(
+            f'Evaluation results will be saved to: '
+            f'{self.result_directory}'
         )
 
     def image_callback(self, msg):
@@ -88,17 +138,15 @@ class ImageSubscriber(Node):
 
                 current_time = self.get_clock().now()
 
-                filter_alpha = 0.25
-
                 if self.filtered_ratio is None:
                     self.filtered_ratio = box_height_ratio
 
                 else:
                     self.filtered_ratio = (
-                        filter_alpha
+                        self.filter_alpha
                         * box_height_ratio
                         + (
-                            1.0 - filter_alpha
+                            1.0 - self.filter_alpha
                         )
                         * self.filtered_ratio
                     )
@@ -151,22 +199,11 @@ class ImageSubscriber(Node):
 
                 normalized_error_x = max(
                     -1.0,
-                    min(1.0, normalized_error_x)
+                    min(
+                        1.0,
+                        normalized_error_x
+                    )
                 )
-
-                max_angular_speed = 0.8
-                max_linear_speed = 0.3
-
-                target_ratio = 0.315
-
-                target_ratio_low = 0.300
-                target_ratio_high = 0.330
-
-                stop_ratio = 0.70
-                resume_ratio = 0.65
-
-                kp = 2.0
-                kd = 0.6
 
                 if abs(error_x) <= dead_zone:
                     target_angular_z = 0.0
@@ -174,7 +211,7 @@ class ImageSubscriber(Node):
 
                 else:
                     target_angular_z = (
-                        max_angular_speed
+                        self.max_angular_speed
                         * normalized_error_x
                     )
 
@@ -183,15 +220,21 @@ class ImageSubscriber(Node):
                         - abs(normalized_error_x)
                     )
 
-                if self.filtered_ratio < target_ratio_low:
+                if (
+                    self.filtered_ratio
+                    < self.target_ratio_low
+                ):
                     ratio_error = (
-                        target_ratio
+                        self.target_ratio
                         - self.filtered_ratio
                     )
 
-                elif self.filtered_ratio > target_ratio_high:
+                elif (
+                    self.filtered_ratio
+                    > self.target_ratio_high
+                ):
                     ratio_error = (
-                        target_ratio
+                        self.target_ratio
                         - self.filtered_ratio
                     )
 
@@ -200,8 +243,8 @@ class ImageSubscriber(Node):
 
                 if dt > 0.0:
                     speed_adjustment = (
-                        kp * ratio_error
-                        - kd * ratio_rate
+                        self.kp * ratio_error
+                        - self.kd * ratio_rate
                     )
 
                     self.forward_speed += (
@@ -211,33 +254,36 @@ class ImageSubscriber(Node):
                 self.forward_speed = max(
                     0.0,
                     min(
-                        max_linear_speed,
+                        self.max_linear_speed,
                         self.forward_speed
                     )
                 )
 
-                if self.filtered_ratio <= target_ratio:
+                if (
+                    self.filtered_ratio
+                    <= self.target_ratio
+                ):
                     distance_speed_limit = (
-                        max_linear_speed
+                        self.max_linear_speed
                     )
 
                 else:
                     distance_speed_limit = (
-                        max_linear_speed
+                        self.max_linear_speed
                         * (
-                            stop_ratio
+                            self.stop_ratio
                             - self.filtered_ratio
                         )
                         / (
-                            stop_ratio
-                            - target_ratio
+                            self.stop_ratio
+                            - self.target_ratio
                         )
                     )
 
                     distance_speed_limit = max(
                         0.0,
                         min(
-                            max_linear_speed,
+                            self.max_linear_speed,
                             distance_speed_limit
                         )
                     )
@@ -252,13 +298,27 @@ class ImageSubscriber(Node):
                     * turn_factor
                 )
 
+                previous_stop_state = self.stop_state
+
                 if self.stop_state:
-                    if self.filtered_ratio <= resume_ratio:
+                    if (
+                        self.filtered_ratio
+                        <= self.resume_ratio
+                    ):
                         self.stop_state = False
 
                 else:
-                    if self.filtered_ratio >= stop_ratio:
+                    if (
+                        self.filtered_ratio
+                        >= self.stop_ratio
+                    ):
                         self.stop_state = True
+
+                if (
+                    not previous_stop_state
+                    and self.stop_state
+                ):
+                    self.stop_count += 1
 
                 if self.stop_state:
                     self.forward_speed = 0.0
@@ -280,9 +340,38 @@ class ImageSubscriber(Node):
 
                 self.cmd_vel_publisher.publish(twist)
 
+                if self.first_record_time is None:
+                    self.first_record_time = current_time
+                    elapsed_time = 0.0
+
+                else:
+                    elapsed_time = (
+                        current_time
+                        - self.first_record_time
+                    ).nanoseconds / 1_000_000_000.0
+
+                self.test_records.append(
+                    {
+                        'time_s': elapsed_time,
+                        'raw_ratio': box_height_ratio,
+                        'filtered_ratio': self.filtered_ratio,
+                        'ratio_error': ratio_error,
+                        'ratio_rate': ratio_rate,
+                        'linear_x': twist.linear.x,
+                        'angular_z': twist.angular.z,
+                        'speed_limit': distance_speed_limit,
+                        'direction': direction,
+                        'state': state_text,
+                        'confidence': confidence
+                    }
+                )
+
                 cv2.circle(
                     annotated_image,
-                    (int(center_x), int(center_y)),
+                    (
+                        int(center_x),
+                        int(center_y)
+                    ),
                     7,
                     (0, 0, 255),
                     -1
@@ -290,8 +379,14 @@ class ImageSubscriber(Node):
 
                 cv2.line(
                     annotated_image,
-                    (int(image_center_x), 0),
-                    (int(image_center_x), image_height),
+                    (
+                        int(image_center_x),
+                        0
+                    ),
+                    (
+                        int(image_center_x),
+                        image_height
+                    ),
                     (255, 0, 0),
                     2
                 )
@@ -316,7 +411,10 @@ class ImageSubscriber(Node):
                 )
 
                 text_x = int(
-                    (image_width - text_width) / 2
+                    (
+                        image_width
+                        - text_width
+                    ) / 2
                 )
 
                 text_y = 60
@@ -325,11 +423,17 @@ class ImageSubscriber(Node):
                     annotated_image,
                     (
                         text_x - 15,
-                        text_y - text_height - 15
+                        text_y
+                        - text_height
+                        - 15
                     ),
                     (
-                        text_x + text_width + 15,
-                        text_y + baseline + 10
+                        text_x
+                        + text_width
+                        + 15,
+                        text_y
+                        + baseline
+                        + 10
                     ),
                     (0, 0, 0),
                     -1
@@ -338,7 +442,10 @@ class ImageSubscriber(Node):
                 cv2.putText(
                     annotated_image,
                     text,
-                    (text_x, text_y),
+                    (
+                        text_x,
+                        text_y
+                    ),
                     font,
                     font_scale,
                     (0, 255, 255),
@@ -352,16 +459,24 @@ class ImageSubscriber(Node):
 
                     self.get_logger().info(
                         f'Raw Ratio={box_height_ratio:.3f}, '
-                        f'Filtered Ratio={self.filtered_ratio:.3f}, '
-                        f'Target Ratio={target_ratio:.3f}, '
-                        f'Ratio Error={ratio_error:.3f}, '
-                        f'Ratio Rate={ratio_rate:.3f}, '
-                        f'Speed Limit={distance_speed_limit:.3f}, '
+                        f'Filtered Ratio='
+                        f'{self.filtered_ratio:.3f}, '
+                        f'Target Ratio='
+                        f'{self.target_ratio:.3f}, '
+                        f'Ratio Error='
+                        f'{ratio_error:.3f}, '
+                        f'Ratio Rate='
+                        f'{ratio_rate:.3f}, '
+                        f'Speed Limit='
+                        f'{distance_speed_limit:.3f}, '
                         f'State={state_text}, '
                         f'Direction={direction}, '
-                        f'Linear X={twist.linear.x:.3f}, '
-                        f'Angular Z={twist.angular.z:.3f}, '
-                        f'Confidence={confidence:.2f}, '
+                        f'Linear X='
+                        f'{twist.linear.x:.3f}, '
+                        f'Angular Z='
+                        f'{twist.angular.z:.3f}, '
+                        f'Confidence='
+                        f'{confidence:.2f}, '
                         f'Class={class_id}'
                     )
 
@@ -379,6 +494,455 @@ class ImageSubscriber(Node):
                 f'Image processing failed: {error}'
             )
 
+    def save_evaluation(self):
+
+        if self.evaluation_saved:
+            return
+
+        self.evaluation_saved = True
+
+        if len(self.test_records) == 0:
+            print()
+            print(
+                'No DN-013 evaluation data recorded.'
+            )
+            print()
+            return
+
+        csv_path = os.path.join(
+            self.result_directory,
+            'data.csv'
+        )
+
+        summary_path = os.path.join(
+            self.result_directory,
+            'summary.txt'
+        )
+
+        ratio_graph_path = os.path.join(
+            self.result_directory,
+            'ratio.png'
+        )
+
+        speed_graph_path = os.path.join(
+            self.result_directory,
+            'speed.png'
+        )
+
+        ratio_rate_graph_path = os.path.join(
+            self.result_directory,
+            'ratio_rate.png'
+        )
+
+        fieldnames = [
+            'time_s',
+            'raw_ratio',
+            'filtered_ratio',
+            'ratio_error',
+            'ratio_rate',
+            'linear_x',
+            'angular_z',
+            'speed_limit',
+            'direction',
+            'state',
+            'confidence'
+        ]
+
+        with open(
+            csv_path,
+            'w',
+            newline='',
+            encoding='utf-8'
+        ) as csv_file:
+
+            writer = csv.DictWriter(
+                csv_file,
+                fieldnames=fieldnames
+            )
+
+            writer.writeheader()
+
+            writer.writerows(
+                self.test_records
+            )
+
+        filtered_ratios = [
+            record['filtered_ratio']
+            for record in self.test_records
+        ]
+
+        linear_speeds = [
+            record['linear_x']
+            for record in self.test_records
+        ]
+
+        absolute_errors = [
+            abs(
+                self.target_ratio
+                - ratio
+            )
+            for ratio in filtered_ratios
+        ]
+
+        mae = (
+            sum(absolute_errors)
+            / len(absolute_errors)
+        )
+
+        target_band_count = sum(
+            1
+            for ratio in filtered_ratios
+            if (
+                self.target_ratio_low
+                <= ratio
+                <= self.target_ratio_high
+            )
+        )
+
+        target_band_percentage = (
+            target_band_count
+            / len(filtered_ratios)
+            * 100.0
+        )
+
+        minimum_ratio = min(
+            filtered_ratios
+        )
+
+        maximum_ratio = max(
+            filtered_ratios
+        )
+
+        average_linear_speed = (
+            sum(linear_speeds)
+            / len(linear_speeds)
+        )
+
+        maximum_linear_speed_recorded = max(
+            linear_speeds
+        )
+
+        detected_duration = (
+            self.test_records[-1]['time_s']
+        )
+
+        summary_lines = [
+            '===== DN-013 Evaluation =====',
+            (
+                f'Detected Duration      : '
+                f'{detected_duration:.2f} s'
+            ),
+            (
+                f'Detected Samples       : '
+                f'{len(self.test_records)}'
+            ),
+            (
+                f'Control Max Speed      : '
+                f'{self.max_linear_speed:.3f} m/s'
+            ),
+            (
+                f'Target Ratio           : '
+                f'{self.target_ratio:.3f}'
+            ),
+            (
+                f'Target Band            : '
+                f'{self.target_ratio_low:.3f} '
+                f'~ '
+                f'{self.target_ratio_high:.3f}'
+            ),
+            (
+                f'Mean Absolute Error    : '
+                f'{mae:.4f}'
+            ),
+            (
+                f'Target Band Samples    : '
+                f'{target_band_percentage:.2f} %'
+            ),
+            (
+                f'Minimum Ratio          : '
+                f'{minimum_ratio:.3f}'
+            ),
+            (
+                f'Maximum Ratio          : '
+                f'{maximum_ratio:.3f}'
+            ),
+            (
+                f'Average Linear Speed   : '
+                f'{average_linear_speed:.3f} m/s'
+            ),
+            (
+                f'Maximum Linear Speed   : '
+                f'{maximum_linear_speed_recorded:.3f} m/s'
+            ),
+            (
+                f'STOP Count             : '
+                f'{self.stop_count}'
+            ),
+            (
+                'Evaluation Scope        : '
+                'person-detected frames only'
+            ),
+            '============================='
+        ]
+
+        summary_text = '\n'.join(
+            summary_lines
+        )
+
+        print()
+        print(summary_text)
+        print()
+
+        with open(
+            summary_path,
+            'w',
+            encoding='utf-8'
+        ) as summary_file:
+            summary_file.write(
+                summary_text
+            )
+
+        try:
+            import matplotlib
+
+            matplotlib.use('Agg')
+
+            import matplotlib.pyplot as plt
+
+            times = [
+                record['time_s']
+                for record in self.test_records
+            ]
+
+            raw_ratios = [
+                record['raw_ratio']
+                for record in self.test_records
+            ]
+
+            ratio_rates = [
+                record['ratio_rate']
+                for record in self.test_records
+            ]
+
+            speed_limits = [
+                record['speed_limit']
+                for record in self.test_records
+            ]
+
+            plt.figure(
+                figsize=(11, 6)
+            )
+
+            plt.plot(
+                times,
+                raw_ratios,
+                label='Raw Ratio',
+                alpha=0.35
+            )
+
+            plt.plot(
+                times,
+                filtered_ratios,
+                label='Filtered Ratio',
+                linewidth=2
+            )
+
+            plt.axhline(
+                self.target_ratio,
+                linestyle='--',
+                label='Target Ratio 0.315'
+            )
+
+            plt.axhspan(
+                self.target_ratio_low,
+                self.target_ratio_high,
+                alpha=0.15,
+                label='Target Band'
+            )
+
+            plt.axhline(
+                self.stop_ratio,
+                linestyle=':',
+                label='STOP Ratio 0.70'
+            )
+
+            plt.xlabel(
+                'Time (s)'
+            )
+
+            plt.ylabel(
+                'Bounding Box Height Ratio'
+            )
+
+            plt.title(
+                'DN-013 Target Ratio Tracking'
+            )
+
+            plt.legend()
+
+            plt.grid(
+                True,
+                alpha=0.3
+            )
+
+            plt.tight_layout()
+
+            plt.savefig(
+                ratio_graph_path,
+                dpi=200
+            )
+
+            plt.close()
+
+            plt.figure(
+                figsize=(11, 6)
+            )
+
+            plt.plot(
+                times,
+                linear_speeds,
+                label='Linear X',
+                linewidth=2
+            )
+
+            plt.plot(
+                times,
+                speed_limits,
+                label='Distance Speed Limit',
+                linestyle='--'
+            )
+
+            plt.axhline(
+                self.max_linear_speed,
+                linestyle=':',
+                label=(
+                    f'Max Speed '
+                    f'{self.max_linear_speed:.2f}'
+                )
+            )
+
+            plt.xlabel(
+                'Time (s)'
+            )
+
+            plt.ylabel(
+                'Linear Speed (m/s)'
+            )
+
+            plt.title(
+                'DN-013 Linear Speed Response'
+            )
+
+            plt.legend()
+
+            plt.grid(
+                True,
+                alpha=0.3
+            )
+
+            plt.tight_layout()
+
+            plt.savefig(
+                speed_graph_path,
+                dpi=200
+            )
+
+            plt.close()
+
+            plt.figure(
+                figsize=(11, 6)
+            )
+
+            plt.plot(
+                times,
+                ratio_rates,
+                label='Ratio Rate',
+                linewidth=1.5
+            )
+
+            plt.axhline(
+                0.0,
+                linestyle='--',
+                label='Zero Relative Change'
+            )
+
+            plt.xlabel(
+                'Time (s)'
+            )
+
+            plt.ylabel(
+                'Ratio Rate (1/s)'
+            )
+
+            plt.title(
+                'DN-013 Bounding Box Ratio Rate'
+            )
+
+            plt.legend()
+
+            plt.grid(
+                True,
+                alpha=0.3
+            )
+
+            plt.tight_layout()
+
+            plt.savefig(
+                ratio_rate_graph_path,
+                dpi=200
+            )
+
+            plt.close()
+
+            print(
+                'DN-013 result files saved:'
+            )
+
+            print(
+                f'Run Directory : '
+                f'{self.result_directory}'
+            )
+
+            print(
+                f'CSV           : '
+                f'{csv_path}'
+            )
+
+            print(
+                f'Summary       : '
+                f'{summary_path}'
+            )
+
+            print(
+                f'Ratio Graph   : '
+                f'{ratio_graph_path}'
+            )
+
+            print(
+                f'Speed Graph   : '
+                f'{speed_graph_path}'
+            )
+
+            print(
+                f'Ratio Rate    : '
+                f'{ratio_rate_graph_path}'
+            )
+
+        except ImportError:
+            print(
+                'matplotlib is not installed.'
+            )
+
+            print(
+                'CSV and summary were saved, '
+                'but graphs were not generated.'
+            )
+
+        except Exception as error:
+            print(
+                f'Graph generation failed: {error}'
+            )
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -391,10 +955,28 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
 
+    except ExternalShutdownException:
+        pass
+
     finally:
+        try:
+            node.save_evaluation()
+
+        except Exception as error:
+            print(
+                f'Evaluation save failed: {error}'
+            )
+
         cv2.destroyAllWindows()
-        node.destroy_node()
-        rclpy.shutdown()
+
+        try:
+            node.destroy_node()
+
+        except Exception:
+            pass
+
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

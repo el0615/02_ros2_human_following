@@ -52,7 +52,9 @@ class ImageSubscriber(Node):
         self.filter_alpha = 0.25
 
         self.max_angular_speed = 0.8
-        self.max_linear_speed = 0.3
+        self.max_linear_speed = 0.9
+        self.normal_max_speed = 0.7
+        self.slowdown_ratio = 0.26
 
         self.target_ratio = 0.315
         self.target_ratio_low = 0.300
@@ -261,29 +263,58 @@ class ImageSubscriber(Node):
 
                 if (
                     self.filtered_ratio
-                    <= self.target_ratio
+                    < self.slowdown_ratio
                 ):
                     distance_speed_limit = (
                         self.max_linear_speed
                     )
 
-                else:
+                elif (
+                    self.filtered_ratio
+                    < self.target_ratio_low
+                ):
+                    slowdown_progress = (
+                        self.filtered_ratio
+                        - self.slowdown_ratio
+                    ) / (
+                        self.target_ratio_low
+                        - self.slowdown_ratio
+                    )
+
                     distance_speed_limit = (
                         self.max_linear_speed
+                        - slowdown_progress
+                        * (
+                            self.max_linear_speed
+                            - self.normal_max_speed
+                        )
+                    )
+
+                elif (
+                    self.filtered_ratio
+                    <= self.target_ratio_high
+                ):
+                    distance_speed_limit = (
+                        self.normal_max_speed
+                    )
+
+                else:
+                    distance_speed_limit = (
+                        self.normal_max_speed
                         * (
                             self.stop_ratio
                             - self.filtered_ratio
                         )
                         / (
                             self.stop_ratio
-                            - self.target_ratio
+                            - self.target_ratio_high
                         )
                     )
 
                     distance_speed_limit = max(
                         0.0,
                         min(
-                            self.max_linear_speed,
+                            self.normal_max_speed,
                             distance_speed_limit
                         )
                     )
@@ -637,8 +668,16 @@ class ImageSubscriber(Node):
                 f'{len(self.test_records)}'
             ),
             (
-                f'Control Max Speed      : '
+                f'Catch-up Max Speed     : '
                 f'{self.max_linear_speed:.3f} m/s'
+            ),
+            (
+                f'Normal Max Speed       : '
+                f'{self.normal_max_speed:.3f} m/s'
+            ),
+            (
+                f'Slowdown Ratio         : '
+                f'{self.slowdown_ratio:.3f}'
             ),
             (
                 f'Target Ratio           : '
@@ -758,6 +797,15 @@ class ImageSubscriber(Node):
                 self.target_ratio_high,
                 alpha=0.15,
                 label='Target Band'
+            )
+
+            plt.axhline(
+                self.slowdown_ratio,
+                linestyle='-.',
+                label=(
+                    f'Slowdown Ratio '
+                    f'{self.slowdown_ratio:.2f}'
+                )
             )
 
             plt.axhline(

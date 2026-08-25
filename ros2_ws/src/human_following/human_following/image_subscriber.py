@@ -51,7 +51,7 @@ class ImageSubscriber(Node):
 
         self.filter_alpha = 0.25
 
-        self.max_angular_speed = 0.8
+        self.max_angular_speed = 1.0
         self.max_linear_speed = 0.9
         self.normal_max_speed = 0.7
         self.slowdown_ratio = 0.26
@@ -66,6 +66,11 @@ class ImageSubscriber(Node):
         self.kp = 2.0
         self.kd = 0.6
 
+        self.center_dead_zone_px = 20
+        self.soft_zone_limit_px = 40
+
+        self.turn_switch_epsilon = 0.01
+
         self.test_records = []
         self.first_record_time = None
         self.evaluation_saved = False
@@ -74,14 +79,17 @@ class ImageSubscriber(Node):
             '%Y%m%d_%H%M%S'
         )
 
-        speed_tag = (
-            f'{self.max_linear_speed:.2f}'
+        angular_tag = (
+            f'{self.max_angular_speed:.2f}'
             .replace('.', 'p')
         )
 
         self.result_directory = os.path.expanduser(
             '~/Projects/02_ros2_human_following/'
-            f'results/dn013/max_{speed_tag}/'
+            'results/dn014/tracking_eval/'
+            f'soft_{self.center_dead_zone_px:03d}_'
+            f'{self.soft_zone_limit_px:03d}_'
+            f'linear_ang_{angular_tag}/'
             f'run_{self.run_timestamp}'
         )
 
@@ -92,7 +100,23 @@ class ImageSubscriber(Node):
 
         self.get_logger().info(
             'Image subscriber, YOLO model, '
-            'cmd_vel publisher, and DN-013 evaluator started'
+            'cmd_vel publisher, and DN-014 '
+            'Soft Zone evaluator started'
+        )
+
+        self.get_logger().info(
+            f'Center Dead Zone: '
+            f'{self.center_dead_zone_px} px'
+        )
+
+        self.get_logger().info(
+            f'Soft Zone Limit: '
+            f'{self.soft_zone_limit_px} px'
+        )
+
+        self.get_logger().info(
+            f'Max Angular Speed: '
+            f'{self.max_angular_speed:.3f} rad/s'
         )
 
         self.get_logger().info(
@@ -183,20 +207,18 @@ class ImageSubscriber(Node):
 
                 image_center_x = image_width / 2
 
-                error_x = center_x - image_center_x
-                dead_zone = 80
+                error_x = (
+                    center_x
+                    - image_center_x
+                )
 
-                if error_x < -dead_zone:
-                    direction = 'LEFT'
-
-                elif error_x > dead_zone:
-                    direction = 'RIGHT'
-
-                else:
-                    direction = 'CENTER'
+                abs_error_x = abs(
+                    error_x
+                )
 
                 normalized_error_x = (
-                    error_x / image_center_x
+                    error_x
+                    / image_center_x
                 )
 
                 normalized_error_x = max(
@@ -207,14 +229,71 @@ class ImageSubscriber(Node):
                     )
                 )
 
-                if abs(error_x) <= dead_zone:
+                base_angular_z = (
+                    self.max_angular_speed
+                    * normalized_error_x
+                )
+
+                if (
+                    abs_error_x
+                    <= self.center_dead_zone_px
+                ):
+                    direction = 'CENTER'
+                    turn_mode = 'CENTER'
+                    soft_gain = 0.0
                     target_angular_z = 0.0
                     turn_factor = 1.0
 
-                else:
+                elif (
+                    abs_error_x
+                    <= self.soft_zone_limit_px
+                ):
+                    if error_x < 0:
+                        direction = 'LEFT'
+
+                    else:
+                        direction = 'RIGHT'
+
+                    turn_mode = 'SOFT'
+
+                    soft_gain = (
+                        abs_error_x
+                        - self.center_dead_zone_px
+                    ) / (
+                        self.soft_zone_limit_px
+                        - self.center_dead_zone_px
+                    )
+
+                    soft_gain = max(
+                        0.0,
+                        min(
+                            1.0,
+                            soft_gain
+                        )
+                    )
+
                     target_angular_z = (
-                        self.max_angular_speed
-                        * normalized_error_x
+                        base_angular_z
+                        * soft_gain
+                    )
+
+                    turn_factor = (
+                        1.0
+                        - abs(normalized_error_x)
+                    )
+
+                else:
+                    if error_x < 0:
+                        direction = 'LEFT'
+
+                    else:
+                        direction = 'RIGHT'
+
+                    turn_mode = 'FULL'
+                    soft_gain = 1.0
+
+                    target_angular_z = (
+                        base_angular_z
                     )
 
                     turn_factor = (
@@ -369,7 +448,9 @@ class ImageSubscriber(Node):
                 twist.angular.y = 0.0
                 twist.angular.z = target_angular_z
 
-                self.cmd_vel_publisher.publish(twist)
+                self.cmd_vel_publisher.publish(
+                    twist
+                )
 
                 if self.first_record_time is None:
                     self.first_record_time = current_time
@@ -388,6 +469,15 @@ class ImageSubscriber(Node):
                         'filtered_ratio': self.filtered_ratio,
                         'ratio_error': ratio_error,
                         'ratio_rate': ratio_rate,
+                        'x_error_px': error_x,
+                        'abs_x_error_px': abs_error_x,
+                        'normalized_error_x': normalized_error_x,
+                        'center_dead_zone_px':
+                            self.center_dead_zone_px,
+                        'soft_zone_limit_px':
+                            self.soft_zone_limit_px,
+                        'soft_gain': soft_gain,
+                        'turn_mode': turn_mode,
                         'linear_x': twist.linear.x,
                         'angular_z': twist.angular.z,
                         'speed_limit': distance_speed_limit,
@@ -422,13 +512,91 @@ class ImageSubscriber(Node):
                     2
                 )
 
+                dead_left_x = int(
+                    image_center_x
+                    - self.center_dead_zone_px
+                )
+
+                dead_right_x = int(
+                    image_center_x
+                    + self.center_dead_zone_px
+                )
+
+                soft_left_x = int(
+                    image_center_x
+                    - self.soft_zone_limit_px
+                )
+
+                soft_right_x = int(
+                    image_center_x
+                    + self.soft_zone_limit_px
+                )
+
+                cv2.line(
+                    annotated_image,
+                    (
+                        dead_left_x,
+                        0
+                    ),
+                    (
+                        dead_left_x,
+                        image_height
+                    ),
+                    (0, 255, 0),
+                    2
+                )
+
+                cv2.line(
+                    annotated_image,
+                    (
+                        dead_right_x,
+                        0
+                    ),
+                    (
+                        dead_right_x,
+                        image_height
+                    ),
+                    (0, 255, 0),
+                    2
+                )
+
+                cv2.line(
+                    annotated_image,
+                    (
+                        soft_left_x,
+                        0
+                    ),
+                    (
+                        soft_left_x,
+                        image_height
+                    ),
+                    (0, 255, 255),
+                    1
+                )
+
+                cv2.line(
+                    annotated_image,
+                    (
+                        soft_right_x,
+                        0
+                    ),
+                    (
+                        soft_right_x,
+                        image_height
+                    ),
+                    (0, 255, 255),
+                    1
+                )
+
                 text = (
                     f'Direction: {direction} | '
-                    f'{state_text}'
+                    f'{state_text} | '
+                    f'{turn_mode} | '
+                    f'X Error: {error_x:.0f}px'
                 )
 
                 font = cv2.FONT_HERSHEY_SIMPLEX
-                font_scale = 1.3
+                font_scale = 1.0
                 thickness = 3
 
                 (
@@ -489,7 +657,8 @@ class ImageSubscriber(Node):
                 ).nanoseconds >= 1_000_000_000:
 
                     self.get_logger().info(
-                        f'Raw Ratio={box_height_ratio:.3f}, '
+                        f'Raw Ratio='
+                        f'{box_height_ratio:.3f}, '
                         f'Filtered Ratio='
                         f'{self.filtered_ratio:.3f}, '
                         f'Target Ratio='
@@ -498,17 +667,26 @@ class ImageSubscriber(Node):
                         f'{ratio_error:.3f}, '
                         f'Ratio Rate='
                         f'{ratio_rate:.3f}, '
+                        f'X Error='
+                        f'{error_x:.1f}px, '
+                        f'Turn Mode='
+                        f'{turn_mode}, '
+                        f'Soft Gain='
+                        f'{soft_gain:.3f}, '
                         f'Speed Limit='
                         f'{distance_speed_limit:.3f}, '
-                        f'State={state_text}, '
-                        f'Direction={direction}, '
+                        f'State='
+                        f'{state_text}, '
+                        f'Direction='
+                        f'{direction}, '
                         f'Linear X='
                         f'{twist.linear.x:.3f}, '
                         f'Angular Z='
                         f'{twist.angular.z:.3f}, '
                         f'Confidence='
                         f'{confidence:.2f}, '
-                        f'Class={class_id}'
+                        f'Class='
+                        f'{class_id}'
                     )
 
                     self.last_log_time = current_time
@@ -522,7 +700,8 @@ class ImageSubscriber(Node):
 
         except Exception as error:
             self.get_logger().error(
-                f'Image processing failed: {error}'
+                f'Image processing failed: '
+                f'{error}'
             )
 
     def save_evaluation(self):
@@ -535,7 +714,7 @@ class ImageSubscriber(Node):
         if len(self.test_records) == 0:
             print()
             print(
-                'No DN-013 evaluation data recorded.'
+                'No DN-014 evaluation data recorded.'
             )
             print()
             return
@@ -565,12 +744,29 @@ class ImageSubscriber(Node):
             'ratio_rate.png'
         )
 
+        x_error_graph_path = os.path.join(
+            self.result_directory,
+            'x_error.png'
+        )
+
+        angular_graph_path = os.path.join(
+            self.result_directory,
+            'angular_response.png'
+        )
+
         fieldnames = [
             'time_s',
             'raw_ratio',
             'filtered_ratio',
             'ratio_error',
             'ratio_rate',
+            'x_error_px',
+            'abs_x_error_px',
+            'normalized_error_x',
+            'center_dead_zone_px',
+            'soft_zone_limit_px',
+            'soft_gain',
+            'turn_mode',
             'linear_x',
             'angular_z',
             'speed_limit',
@@ -604,6 +800,26 @@ class ImageSubscriber(Node):
 
         linear_speeds = [
             record['linear_x']
+            for record in self.test_records
+        ]
+
+        angular_speeds = [
+            record['angular_z']
+            for record in self.test_records
+        ]
+
+        x_errors = [
+            record['x_error_px']
+            for record in self.test_records
+        ]
+
+        abs_x_errors = [
+            record['abs_x_error_px']
+            for record in self.test_records
+        ]
+
+        normalized_x_errors = [
+            record['normalized_error_x']
             for record in self.test_records
         ]
 
@@ -653,12 +869,203 @@ class ImageSubscriber(Node):
             linear_speeds
         )
 
+        mean_abs_x_error = (
+            sum(abs_x_errors)
+            / len(abs_x_errors)
+        )
+
+        max_abs_x_error = max(
+            abs_x_errors
+        )
+
+        mean_abs_normalized_x_error = (
+            sum(
+                abs(error)
+                for error in normalized_x_errors
+            )
+            / len(normalized_x_errors)
+        )
+
+        center_20_count = sum(
+            1
+            for error in abs_x_errors
+            if error <= 20
+        )
+
+        center_20_percentage = (
+            center_20_count
+            / len(abs_x_errors)
+            * 100.0
+        )
+
+        center_40_count = sum(
+            1
+            for error in abs_x_errors
+            if error <= 40
+        )
+
+        center_40_percentage = (
+            center_40_count
+            / len(abs_x_errors)
+            * 100.0
+        )
+
+        center_80_count = sum(
+            1
+            for error in abs_x_errors
+            if error <= 80
+        )
+
+        center_80_percentage = (
+            center_80_count
+            / len(abs_x_errors)
+            * 100.0
+        )
+
+        center_mode_count = sum(
+            1
+            for record in self.test_records
+            if record['turn_mode'] == 'CENTER'
+        )
+
+        soft_mode_count = sum(
+            1
+            for record in self.test_records
+            if record['turn_mode'] == 'SOFT'
+        )
+
+        full_mode_count = sum(
+            1
+            for record in self.test_records
+            if record['turn_mode'] == 'FULL'
+        )
+
+        center_mode_percentage = (
+            center_mode_count
+            / len(self.test_records)
+            * 100.0
+        )
+
+        soft_mode_percentage = (
+            soft_mode_count
+            / len(self.test_records)
+            * 100.0
+        )
+
+        full_mode_percentage = (
+            full_mode_count
+            / len(self.test_records)
+            * 100.0
+        )
+
+        mean_abs_angular_z = (
+            sum(
+                abs(speed)
+                for speed in angular_speeds
+            )
+            / len(angular_speeds)
+        )
+
+        max_abs_angular_z = max(
+            abs(speed)
+            for speed in angular_speeds
+        )
+
+        angular_change_rates = []
+
+        for index in range(
+            1,
+            len(self.test_records)
+        ):
+            current_record = (
+                self.test_records[index]
+            )
+
+            previous_record = (
+                self.test_records[index - 1]
+            )
+
+            angular_dt = (
+                current_record['time_s']
+                - previous_record['time_s']
+            )
+
+            if angular_dt > 0.001:
+                angular_change_rate = abs(
+                    (
+                        current_record['angular_z']
+                        - previous_record['angular_z']
+                    )
+                    / angular_dt
+                )
+
+                angular_change_rates.append(
+                    angular_change_rate
+                )
+
+        if len(angular_change_rates) > 0:
+            mean_angular_change_rate = (
+                sum(angular_change_rates)
+                / len(angular_change_rates)
+            )
+
+            max_angular_change_rate = max(
+                angular_change_rates
+            )
+
+        else:
+            mean_angular_change_rate = 0.0
+            max_angular_change_rate = 0.0
+
+        turn_switch_count = 0
+        previous_turn_sign = 0
+
+        for angular_speed in angular_speeds:
+
+            if (
+                angular_speed
+                > self.turn_switch_epsilon
+            ):
+                current_turn_sign = 1
+
+            elif (
+                angular_speed
+                < -self.turn_switch_epsilon
+            ):
+                current_turn_sign = -1
+
+            else:
+                current_turn_sign = 0
+
+            if current_turn_sign != 0:
+
+                if (
+                    previous_turn_sign != 0
+                    and current_turn_sign
+                    != previous_turn_sign
+                ):
+                    turn_switch_count += 1
+
+                previous_turn_sign = (
+                    current_turn_sign
+                )
+
         detected_duration = (
             self.test_records[-1]['time_s']
         )
 
+        if detected_duration > 0.0:
+            turn_switch_rate_per_min = (
+                turn_switch_count
+                / detected_duration
+                * 60.0
+            )
+
+        else:
+            turn_switch_rate_per_min = 0.0
+
         summary_lines = [
-            '===== DN-013 Evaluation =====',
+            '===== DN-014 Evaluation =====',
             (
                 f'Detected Duration      : '
                 f'{detected_duration:.2f} s'
@@ -674,6 +1081,18 @@ class ImageSubscriber(Node):
             (
                 f'Normal Max Speed       : '
                 f'{self.normal_max_speed:.3f} m/s'
+            ),
+            (
+                f'Max Angular Speed      : '
+                f'{self.max_angular_speed:.3f} rad/s'
+            ),
+            (
+                f'Center Dead Zone       : '
+                f'{self.center_dead_zone_px} px'
+            ),
+            (
+                f'Soft Zone Limit        : '
+                f'{self.soft_zone_limit_px} px'
             ),
             (
                 f'Slowdown Ratio         : '
@@ -716,6 +1135,67 @@ class ImageSubscriber(Node):
             (
                 f'STOP Count             : '
                 f'{self.stop_count}'
+            ),
+            '----- Horizontal Tracking -----',
+            (
+                f'Mean Abs X Error       : '
+                f'{mean_abs_x_error:.2f} px'
+            ),
+            (
+                f'Max Abs X Error        : '
+                f'{max_abs_x_error:.2f} px'
+            ),
+            (
+                f'Mean Abs X Error Norm  : '
+                f'{mean_abs_normalized_x_error:.4f}'
+            ),
+            (
+                f'Center +/-20 px        : '
+                f'{center_20_percentage:.2f} %'
+            ),
+            (
+                f'Center +/-40 px        : '
+                f'{center_40_percentage:.2f} %'
+            ),
+            (
+                f'Center +/-80 px        : '
+                f'{center_80_percentage:.2f} %'
+            ),
+            (
+                f'CENTER Mode Samples    : '
+                f'{center_mode_percentage:.2f} %'
+            ),
+            (
+                f'SOFT Mode Samples      : '
+                f'{soft_mode_percentage:.2f} %'
+            ),
+            (
+                f'FULL Mode Samples      : '
+                f'{full_mode_percentage:.2f} %'
+            ),
+            (
+                f'Mean Abs Angular Z     : '
+                f'{mean_abs_angular_z:.4f} rad/s'
+            ),
+            (
+                f'Max Abs Angular Z      : '
+                f'{max_abs_angular_z:.4f} rad/s'
+            ),
+            (
+                f'Mean Angular Change    : '
+                f'{mean_angular_change_rate:.4f} rad/s^2'
+            ),
+            (
+                f'Max Angular Change     : '
+                f'{max_angular_change_rate:.4f} rad/s^2'
+            ),
+            (
+                f'Turn Direction Switch  : '
+                f'{turn_switch_count}'
+            ),
+            (
+                f'Turn Switch Rate       : '
+                f'{turn_switch_rate_per_min:.2f} /min'
             ),
             (
                 'Evaluation Scope        : '
@@ -823,7 +1303,7 @@ class ImageSubscriber(Node):
             )
 
             plt.title(
-                'DN-013 Target Ratio Tracking'
+                'DN-014 Target Ratio Tracking'
             )
 
             plt.legend()
@@ -878,7 +1358,7 @@ class ImageSubscriber(Node):
             )
 
             plt.title(
-                'DN-013 Linear Speed Response'
+                'DN-014 Linear Speed Response'
             )
 
             plt.legend()
@@ -923,7 +1403,7 @@ class ImageSubscriber(Node):
             )
 
             plt.title(
-                'DN-013 Bounding Box Ratio Rate'
+                'DN-014 Bounding Box Ratio Rate'
             )
 
             plt.legend()
@@ -942,8 +1422,122 @@ class ImageSubscriber(Node):
 
             plt.close()
 
+            plt.figure(
+                figsize=(11, 6)
+            )
+
+            plt.plot(
+                times,
+                x_errors,
+                label='X Error',
+                linewidth=1.5
+            )
+
+            plt.axhline(
+                0.0,
+                linestyle='--',
+                label='Image Center'
+            )
+
+            plt.axhspan(
+                -self.center_dead_zone_px,
+                self.center_dead_zone_px,
+                alpha=0.15,
+                label=(
+                    f'Dead Zone '
+                    f'+/-{self.center_dead_zone_px}px'
+                )
+            )
+
+            plt.axhline(
+                self.soft_zone_limit_px,
+                linestyle=':',
+                label=(
+                    f'Soft Zone '
+                    f'+/-{self.soft_zone_limit_px}px'
+                )
+            )
+
+            plt.axhline(
+                -self.soft_zone_limit_px,
+                linestyle=':'
+            )
+
+            plt.xlabel(
+                'Time (s)'
+            )
+
+            plt.ylabel(
+                'Horizontal Error (px)'
+            )
+
+            plt.title(
+                'DN-014 Horizontal Tracking Error'
+            )
+
+            plt.legend()
+
+            plt.grid(
+                True,
+                alpha=0.3
+            )
+
+            plt.tight_layout()
+
+            plt.savefig(
+                x_error_graph_path,
+                dpi=200
+            )
+
+            plt.close()
+
+            plt.figure(
+                figsize=(11, 6)
+            )
+
+            plt.plot(
+                times,
+                angular_speeds,
+                label='Angular Z',
+                linewidth=1.5
+            )
+
+            plt.axhline(
+                0.0,
+                linestyle='--',
+                label='Zero Angular Speed'
+            )
+
+            plt.xlabel(
+                'Time (s)'
+            )
+
+            plt.ylabel(
+                'Angular Speed (rad/s)'
+            )
+
+            plt.title(
+                'DN-014 Angular Control Response'
+            )
+
+            plt.legend()
+
+            plt.grid(
+                True,
+                alpha=0.3
+            )
+
+            plt.tight_layout()
+
+            plt.savefig(
+                angular_graph_path,
+                dpi=200
+            )
+
+            plt.close()
+
             print(
-                'DN-013 result files saved:'
+                'DN-014 result files saved:'
             )
 
             print(
@@ -976,6 +1570,16 @@ class ImageSubscriber(Node):
                 f'{ratio_rate_graph_path}'
             )
 
+            print(
+                f'X Error Graph : '
+                f'{x_error_graph_path}'
+            )
+
+            print(
+                f'Angular Graph : '
+                f'{angular_graph_path}'
+            )
+
         except ImportError:
             print(
                 'matplotlib is not installed.'
@@ -988,7 +1592,8 @@ class ImageSubscriber(Node):
 
         except Exception as error:
             print(
-                f'Graph generation failed: {error}'
+                f'Graph generation failed: '
+                f'{error}'
             )
 
 
@@ -1012,7 +1617,8 @@ def main(args=None):
 
         except Exception as error:
             print(
-                f'Evaluation save failed: {error}'
+                f'Evaluation save failed: '
+                f'{error}'
             )
 
         cv2.destroyAllWindows()

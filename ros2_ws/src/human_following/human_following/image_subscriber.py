@@ -71,6 +71,11 @@ class ImageSubscriber(Node):
 
         self.turn_switch_epsilon = 0.01
 
+        self.no_detection_timeout = 0.3
+        self.no_detection_start_time = None
+        self.last_valid_twist = Twist()
+        self.loss_state = 'NO_TARGET'
+
         self.test_records = []
         self.first_record_time = None
         self.evaluation_saved = False
@@ -140,6 +145,9 @@ class ImageSubscriber(Node):
             annotated_image = results[0].plot()
             boxes = results[0].boxes
 
+            current_time = self.get_clock().now()
+            image_height, image_width = cv_image.shape[:2]
+
             if len(boxes) > 0:
                 box = boxes[0]
 
@@ -154,15 +162,11 @@ class ImageSubscriber(Node):
                 center_x = (x1 + x2) / 2
                 center_y = (y1 + y2) / 2
 
-                image_height, image_width = cv_image.shape[:2]
-
                 box_height = y2 - y1
 
                 box_height_ratio = (
                     box_height / image_height
                 )
-
-                current_time = self.get_clock().now()
 
                 if self.filtered_ratio is None:
                     self.filtered_ratio = box_height_ratio
@@ -452,6 +456,17 @@ class ImageSubscriber(Node):
                     twist
                 )
 
+                self.no_detection_start_time = None
+                self.loss_state = 'TRACKING'
+
+                self.last_valid_twist = Twist()
+                self.last_valid_twist.linear.x = twist.linear.x
+                self.last_valid_twist.linear.y = twist.linear.y
+                self.last_valid_twist.linear.z = twist.linear.z
+                self.last_valid_twist.angular.x = twist.angular.x
+                self.last_valid_twist.angular.y = twist.angular.y
+                self.last_valid_twist.angular.z = twist.angular.z
+
                 if self.first_record_time is None:
                     self.first_record_time = current_time
                     elapsed_time = 0.0
@@ -687,6 +702,115 @@ class ImageSubscriber(Node):
                         f'{confidence:.2f}, '
                         f'Class='
                         f'{class_id}'
+                    )
+
+                    self.last_log_time = current_time
+
+            else:
+                if self.no_detection_start_time is None:
+                    self.no_detection_start_time = current_time
+
+                lost_duration = (
+                    current_time
+                    - self.no_detection_start_time
+                ).nanoseconds / 1_000_000_000.0
+
+                if lost_duration <= self.no_detection_timeout:
+                    self.loss_state = 'TEMP_LOST'
+
+                    twist = Twist()
+                    twist.linear.x = self.last_valid_twist.linear.x
+                    twist.linear.y = self.last_valid_twist.linear.y
+                    twist.linear.z = self.last_valid_twist.linear.z
+                    twist.angular.x = self.last_valid_twist.angular.x
+                    twist.angular.y = self.last_valid_twist.angular.y
+                    twist.angular.z = self.last_valid_twist.angular.z
+
+                else:
+                    self.loss_state = 'LOST_STOP'
+
+                    self.forward_speed = 0.0
+                    self.filtered_ratio = None
+                    self.previous_filtered_ratio = None
+                    self.previous_ratio_time = None
+                    self.stop_state = False
+
+                    twist = Twist()
+
+                self.cmd_vel_publisher.publish(twist)
+
+                text = (
+                    f'NO PERSON | {self.loss_state} | '
+                    f'Lost: {lost_duration:.2f}s'
+                )
+
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 1.0
+                thickness = 3
+
+                (
+                    text_width,
+                    text_height
+                ), baseline = cv2.getTextSize(
+                    text,
+                    font,
+                    font_scale,
+                    thickness
+                )
+
+                text_x = int(
+                    (
+                        image_width
+                        - text_width
+                    ) / 2
+                )
+
+                text_y = 60
+
+                cv2.rectangle(
+                    annotated_image,
+                    (
+                        text_x - 15,
+                        text_y
+                        - text_height
+                        - 15
+                    ),
+                    (
+                        text_x
+                        + text_width
+                        + 15,
+                        text_y
+                        + baseline
+                        + 10
+                    ),
+                    (0, 0, 0),
+                    -1
+                )
+
+                cv2.putText(
+                    annotated_image,
+                    text,
+                    (
+                        text_x,
+                        text_y
+                    ),
+                    font,
+                    font_scale,
+                    (0, 255, 255),
+                    thickness
+                )
+
+                if (
+                    current_time
+                    - self.last_log_time
+                ).nanoseconds >= 1_000_000_000:
+
+                    self.get_logger().info(
+                        f'No person detected | '
+                        f'State={self.loss_state}, '
+                        f'Lost Duration={lost_duration:.2f}s, '
+                        f'Linear X={twist.linear.x:.3f}, '
+                        f'Angular Z={twist.angular.z:.3f}'
                     )
 
                     self.last_log_time = current_time

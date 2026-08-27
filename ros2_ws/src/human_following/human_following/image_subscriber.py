@@ -72,8 +72,11 @@ class ImageSubscriber(Node):
         self.turn_switch_epsilon = 0.01
 
         self.no_detection_timeout = 0.3
+        self.search_delay = 3.0
+        self.search_angular_speed = 1.0
         self.no_detection_start_time = None
         self.last_valid_twist = Twist()
+        self.last_turn_direction = 0.0
         self.loss_state = 'NO_TARGET'
 
         self.test_records = []
@@ -467,6 +470,11 @@ class ImageSubscriber(Node):
                 self.last_valid_twist.angular.y = twist.angular.y
                 self.last_valid_twist.angular.z = twist.angular.z
 
+                if twist.angular.z > self.turn_switch_epsilon:
+                    self.last_turn_direction = 1.0
+                elif twist.angular.z < -self.turn_switch_epsilon:
+                    self.last_turn_direction = -1.0
+
                 if self.first_record_time is None:
                     self.first_record_time = current_time
                     elapsed_time = 0.0
@@ -727,7 +735,10 @@ class ImageSubscriber(Node):
                     twist.angular.z = self.last_valid_twist.angular.z
 
                 else:
-                    self.loss_state = 'LOST_STOP'
+                    stop_duration = (
+                        lost_duration
+                        - self.no_detection_timeout
+                    )
 
                     self.forward_speed = 0.0
                     self.filtered_ratio = None
@@ -736,6 +747,17 @@ class ImageSubscriber(Node):
                     self.stop_state = False
 
                     twist = Twist()
+
+                    if stop_duration <= self.search_delay:
+                        self.loss_state = 'LOST_STOP'
+
+                    else:
+                        self.loss_state = 'SEARCHING'
+                        twist.linear.x = 0.0
+                        twist.angular.z = (
+                            self.search_angular_speed
+                            * self.last_turn_direction
+                        )
 
                 self.cmd_vel_publisher.publish(twist)
 

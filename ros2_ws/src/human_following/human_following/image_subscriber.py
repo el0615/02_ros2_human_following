@@ -79,6 +79,8 @@ class ImageSubscriber(Node):
         self.last_turn_direction = 0.0
         self.loss_state = 'NO_TARGET'
 
+        self.target_track_id = None
+
         self.test_records = []
         self.first_record_time = None
         self.evaluation_saved = False
@@ -94,7 +96,7 @@ class ImageSubscriber(Node):
 
         self.result_directory = os.path.expanduser(
             '~/Projects/02_ros2_human_following/'
-            'results/dn014/tracking_eval/'
+            'results/dn017/tracking_eval/'
             f'soft_{self.center_dead_zone_px:03d}_'
             f'{self.soft_zone_limit_px:03d}_'
             f'linear_ang_{angular_tag}/'
@@ -108,7 +110,7 @@ class ImageSubscriber(Node):
 
         self.get_logger().info(
             'Image subscriber, YOLO model, '
-            'cmd_vel publisher, and DN-014 '
+            'cmd_vel publisher, and DN-017 '
             'Soft Zone evaluator started'
         )
 
@@ -139,9 +141,11 @@ class ImageSubscriber(Node):
                 desired_encoding='bgr8'
             )
 
-            results = self.model(
+            results = self.model.track(
                 cv_image,
                 classes=[0],
+                persist=True,
+                tracker='bytetrack.yaml',
                 verbose=False
             )
 
@@ -150,9 +154,122 @@ class ImageSubscriber(Node):
 
             current_time = self.get_clock().now()
             image_height, image_width = cv_image.shape[:2]
+            frame_center_x = image_width / 2
+            frame_center_y = image_height / 2
 
-            if len(boxes) > 0:
-                box = boxes[0]
+            selected_box = None
+            lock_candidate_id = None
+            lock_candidate_distance = None
+
+            for candidate_box in boxes:
+                if candidate_box.id is None:
+                    continue
+
+                candidate_track_id = int(
+                    candidate_box.id[0].item()
+                )
+
+                cx1, cy1, cx2, cy2 = map(
+                    float,
+                    candidate_box.xyxy[0].tolist()
+                )
+
+                candidate_center_x = (cx1 + cx2) / 2
+                candidate_center_y = (cy1 + cy2) / 2
+
+                candidate_distance = (
+                    (
+                        candidate_center_x
+                        - frame_center_x
+                    ) ** 2
+                    + (
+                        candidate_center_y
+                        - frame_center_y
+                    ) ** 2
+                ) ** 0.5
+
+                if (
+                    lock_candidate_distance is None
+                    or candidate_distance
+                    < lock_candidate_distance
+                ):
+                    lock_candidate_distance = candidate_distance
+                    lock_candidate_id = candidate_track_id
+
+                if (
+                    self.target_track_id is not None
+                    and candidate_track_id
+                    == self.target_track_id
+                ):
+                    selected_box = candidate_box
+
+            if self.target_track_id is None:
+                self.loss_state = 'WAIT_TARGET'
+                self.no_detection_start_time = None
+
+                twist = Twist()
+                self.cmd_vel_publisher.publish(twist)
+
+                text = 'PRESS L TO LOCK TARGET'
+
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 1.0
+                thickness = 3
+
+                (
+                    text_width,
+                    text_height
+                ), baseline = cv2.getTextSize(
+                    text,
+                    font,
+                    font_scale,
+                    thickness
+                )
+
+                text_x = int(
+                    (
+                        image_width
+                        - text_width
+                    ) / 2
+                )
+
+                text_y = 60
+
+                cv2.rectangle(
+                    annotated_image,
+                    (
+                        text_x - 15,
+                        text_y
+                        - text_height
+                        - 15
+                    ),
+                    (
+                        text_x
+                        + text_width
+                        + 15,
+                        text_y
+                        + baseline
+                        + 10
+                    ),
+                    (0, 0, 0),
+                    -1
+                )
+
+                cv2.putText(
+                    annotated_image,
+                    text,
+                    (
+                        text_x,
+                        text_y
+                    ),
+                    font,
+                    font_scale,
+                    (0, 255, 255),
+                    thickness
+                )
+
+            elif selected_box is not None:
+                box = selected_box
 
                 x1, y1, x2, y2 = map(
                     float,
@@ -164,6 +281,36 @@ class ImageSubscriber(Node):
 
                 center_x = (x1 + x2) / 2
                 center_y = (y1 + y2) / 2
+
+                cv2.rectangle(
+                    annotated_image,
+                    (
+                        int(x1),
+                        int(y1)
+                    ),
+                    (
+                        int(x2),
+                        int(y2)
+                    ),
+                    (255, 0, 255),
+                    4
+                )
+
+                cv2.putText(
+                    annotated_image,
+                    f'TARGET ID {self.target_track_id}',
+                    (
+                        int(x1),
+                        max(
+                            30,
+                            int(y1) - 10
+                        )
+                    ),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.9,
+                    (255, 0, 255),
+                    3
+                )
 
                 box_height = y2 - y1
 
@@ -506,7 +653,8 @@ class ImageSubscriber(Node):
                         'speed_limit': distance_speed_limit,
                         'direction': direction,
                         'state': state_text,
-                        'confidence': confidence
+                        'confidence': confidence,
+                        'track_id': self.target_track_id
                     }
                 )
 
@@ -762,7 +910,8 @@ class ImageSubscriber(Node):
                 self.cmd_vel_publisher.publish(twist)
 
                 text = (
-                    f'NO PERSON | {self.loss_state} | '
+                    f'TARGET ID {self.target_track_id} LOST | '
+                    f'{self.loss_state} | '
                     f'Lost: {lost_duration:.2f}s'
                 )
 
@@ -828,7 +977,7 @@ class ImageSubscriber(Node):
                 ).nanoseconds >= 1_000_000_000:
 
                     self.get_logger().info(
-                        f'No person detected | '
+                        f'Target ID {self.target_track_id} not detected | '
                         f'State={self.loss_state}, '
                         f'Lost Duration={lost_duration:.2f}s, '
                         f'Linear X={twist.linear.x:.3f}, '
@@ -842,7 +991,34 @@ class ImageSubscriber(Node):
                 annotated_image
             )
 
-            cv2.waitKey(1)
+            key = cv2.waitKey(1) & 0xFF
+
+            if key == ord('l'):
+                if lock_candidate_id is not None:
+                    previous_target_id = self.target_track_id
+                    self.target_track_id = lock_candidate_id
+
+                    self.no_detection_start_time = None
+                    self.loss_state = 'TRACKING'
+                    self.forward_speed = 0.0
+                    self.filtered_ratio = None
+                    self.previous_filtered_ratio = None
+                    self.previous_ratio_time = None
+                    self.stop_state = False
+                    self.last_valid_twist = Twist()
+                    self.last_turn_direction = 0.0
+
+                    self.get_logger().info(
+                        f'Target locked: '
+                        f'ID={self.target_track_id}, '
+                        f'Previous ID={previous_target_id}'
+                    )
+
+                else:
+                    self.get_logger().warning(
+                        'Target lock requested, '
+                        'but no tracked person is available.'
+                    )
 
         except Exception as error:
             self.get_logger().error(
@@ -860,7 +1036,7 @@ class ImageSubscriber(Node):
         if len(self.test_records) == 0:
             print()
             print(
-                'No DN-014 evaluation data recorded.'
+                'No DN-017 evaluation data recorded.'
             )
             print()
             return
@@ -918,7 +1094,8 @@ class ImageSubscriber(Node):
             'speed_limit',
             'direction',
             'state',
-            'confidence'
+            'confidence',
+            'track_id'
         ]
 
         with open(
@@ -1211,7 +1388,7 @@ class ImageSubscriber(Node):
             turn_switch_rate_per_min = 0.0
 
         summary_lines = [
-            '===== DN-014 Evaluation =====',
+            '===== DN-017 Evaluation =====',
             (
                 f'Detected Duration      : '
                 f'{detected_duration:.2f} s'
@@ -1345,7 +1522,7 @@ class ImageSubscriber(Node):
             ),
             (
                 'Evaluation Scope        : '
-                'person-detected frames only'
+                'target-tracked frames only'
             ),
             '============================='
         ]
@@ -1449,7 +1626,7 @@ class ImageSubscriber(Node):
             )
 
             plt.title(
-                'DN-014 Target Ratio Tracking'
+                'DN-017 Target Ratio Tracking'
             )
 
             plt.legend()
@@ -1504,7 +1681,7 @@ class ImageSubscriber(Node):
             )
 
             plt.title(
-                'DN-014 Linear Speed Response'
+                'DN-017 Linear Speed Response'
             )
 
             plt.legend()
@@ -1549,7 +1726,7 @@ class ImageSubscriber(Node):
             )
 
             plt.title(
-                'DN-014 Bounding Box Ratio Rate'
+                'DN-017 Bounding Box Ratio Rate'
             )
 
             plt.legend()
@@ -1618,7 +1795,7 @@ class ImageSubscriber(Node):
             )
 
             plt.title(
-                'DN-014 Horizontal Tracking Error'
+                'DN-017 Horizontal Tracking Error'
             )
 
             plt.legend()
@@ -1663,7 +1840,7 @@ class ImageSubscriber(Node):
             )
 
             plt.title(
-                'DN-014 Angular Control Response'
+                'DN-017 Angular Control Response'
             )
 
             plt.legend()
@@ -1683,7 +1860,7 @@ class ImageSubscriber(Node):
             plt.close()
 
             print(
-                'DN-014 result files saved:'
+                'DN-017 result files saved:'
             )
 
             print(
